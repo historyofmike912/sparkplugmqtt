@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MQTT &amp; Sparkplug to BACnet</title>
+<style>
+:root {
+  --navy: #0b2447; --navy-2: #143a70; --blue: #1d5fd0; --blue-dark: #174ea9; --blue-bg: #e8f0fd;
+  --bg: #f2f4f8; --card: #ffffff; --panel: #f7f9fc; --border: #e1e6ee; --border-2: #cfd6e2;
+  --ink: #101828; --ink2: #344054; --ink3: #667085;
+  --ok: #2ea45f; --ok-bg: #e7f6ee; --warn: #b7791f; --warn-bg: #fdf3e1; --bad: #d64545; --bad-bg: #fdecec;
+  --draft: #6b4fd8; --draft-bg: #efebfd; --edit-bg: #fff8e6;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --navy: #07172e; --navy-2: #10305c; --blue: #5b93f0; --blue-dark: #7aa8f5; --blue-bg: #16284a;
+    --bg: #0c131e; --card: #131c29; --panel: #182333; --border: #243247; --border-2: #33445e;
+    --ink: #e8edf4; --ink2: #c3ccd8; --ink3: #8b97a9;
+    --ok: #4cc07c; --ok-bg: #12301f; --warn: #e3a634; --warn-bg: #33270f; --bad: #f07272; --bad-bg: #3a1a1c;
+    --draft: #9d86f2; --draft-bg: #241d44; --edit-bg: #2e2712; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --navy: #07172e; --navy-2: #10305c; --blue: #5b93f0; --blue-dark: #7aa8f5; --blue-bg: #16284a;
+  --bg: #0c131e; --card: #131c29; --panel: #182333; --border: #243247; --border-2: #33445e;
+  --ink: #e8edf4; --ink2: #c3ccd8; --ink3: #8b97a9;
+  --ok: #4cc07c; --ok-bg: #12301f; --warn: #e3a634; --warn-bg: #33270f; --bad: #f07272; --bad-bg: #3a1a1c;
+  --draft: #9d86f2; --draft-bg: #241d44; --edit-bg: #2e2712; --shadow: none;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink2); font: 15px/1.5 "Noto Sans", "Segoe UI", system-ui, -apple-system, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.top { background: var(--navy); color: #fff; }
+.top .in { max-width: 1440px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.top h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: .1px; }
+.top .sub { color: #b9c6dc; font-size: 13px; }
+.health { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; background: rgba(255,255,255,.08); padding: 6px 12px; border-radius: 999px; }
+.health .dot { width: 9px; height: 9px; border-radius: 50%; background: #98a2b3; }
+.health.ok .dot { background: #4cc07c; } .health.warn .dot { background: #e3a634; } .health.bad .dot { background: #f07272; }
+nav.tabs { max-width: 1440px; margin: 0 auto; padding: 0 24px; display: flex; gap: 4px; }
+nav.tabs button { background: none; border: 0; color: #b9c6dc; padding: 10px 14px; border-bottom: 3px solid transparent; cursor: pointer; }
+nav.tabs button[aria-selected="true"] { color: #fff; border-bottom-color: #5b93f0; }
+
+main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 60px; }
+
+/* the pipeline: where every tag is on its way from the broker to BACnet */
+.flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
+.flow .stage { padding: 16px 20px 14px; position: relative; border-right: 1px solid var(--border); }
+.flow .stage:last-child { border-right: 0; }
+.flow .stage:not(:last-child)::after { content: ""; position: absolute; right: -9px; top: 50%; width: 16px; height: 16px; background: var(--card); border-top: 1px solid var(--border); border-right: 1px solid var(--border); transform: translateY(-50%) rotate(45deg); z-index: 1; }
+.flow .n { font-size: 30px; font-weight: 600; color: var(--ink); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.flow .l { font-size: 13px; color: var(--ink3); }
+.flow .stage.pub .n { color: var(--ok); } .flow .stage.stale .n { color: var(--warn); }
+.flow .stage.stale.zero .n { color: var(--ink3); }
+@media (max-width: 760px) { .flow { grid-template-columns: repeat(2, 1fr); } .flow .stage::after { display: none; } .flow .stage:nth-child(2) { border-right: 0; } .flow .stage:nth-child(-n+2) { border-bottom: 1px solid var(--border); } }
+
+.banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+.banner.bad { background: var(--bad-bg); color: var(--bad); } .banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner strong { color: inherit; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.bar .grow { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--border-2); border-radius: 8px; overflow: hidden; }
+.seg button { background: var(--card); border: 0; padding: 6px 12px; cursor: pointer; color: var(--ink2); border-right: 1px solid var(--border-2); font-size: 14px; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--blue-bg); color: var(--blue-dark); font-weight: 600; }
+input.search { border: 1px solid var(--border-2); border-radius: 8px; padding: 6px 10px; min-width: 220px; background: var(--card); }
+.btn { border: 1px solid var(--border-2); background: var(--card); color: var(--ink); padding: 7px 14px; border-radius: 8px; cursor: pointer; font-weight: 500; font-size: 14px; white-space: nowrap; }
+.btn:hover { border-color: var(--blue); }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.primary:hover { background: var(--blue-dark); }
+.btn.danger { color: var(--bad); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th { text-align: left; font-weight: 600; color: var(--ink3); font-size: 13px; padding: 9px 8px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr.edited td { background: var(--edit-bg); }
+tr.skipped td { color: var(--ink3); }
+td.path { min-width: 240px; }
+td.path .p { color: var(--ink); font-weight: 500; word-break: break-all; }
+td.path .meta { color: var(--ink3); font-size: 12px; }
+td input, td select { border: 1px solid var(--border-2); border-radius: 6px; padding: 4px 6px; background: var(--card); }
+td input.name { width: 240px; } td input.num { width: 84px; } td input.tiny { width: 56px; }
+td .val { font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+td .val small { color: var(--ink3); display: block; font-size: 12px; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.pub { background: var(--ok-bg); color: var(--ok); }
+.pill.draft { background: var(--draft-bg); color: var(--draft); }
+.pill.skip { background: var(--panel); color: var(--ink3); border: 1px solid var(--border); }
+.pill.stale { background: var(--warn-bg); color: var(--warn); }
+.note { font-size: 12px; color: var(--ink3); max-width: 260px; }
+.empty { padding: 40px 20px; text-align: center; color: var(--ink3); }
+.empty .btn { margin-top: 12px; }
+.foot { padding: 10px 14px; color: var(--ink3); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+.problems { margin: 0; padding: 10px 14px 10px 32px; background: var(--bad-bg); color: var(--bad); font-size: 13px; }
+
+.panel { padding: 20px; }
+.grid { display: grid; grid-template-columns: 240px minmax(0, 420px); gap: 14px 18px; align-items: center; }
+.grid label { color: var(--ink); font-weight: 500; }
+.grid .hint { grid-column: 2; margin-top: -10px; font-size: 13px; color: var(--ink3); }
+.grid input, .grid select { border: 1px solid var(--border-2); border-radius: 8px; padding: 7px 10px; background: var(--card); width: 100%; }
+@media (max-width: 680px) { .grid { grid-template-columns: 1fr; } .grid .hint { grid-column: 1; margin-top: -8px; } }
+.log { font-size: 13px; }
+h3.sect { font-size: 15px; color: var(--ink); margin: 26px 0 12px; }
+.grid textarea { border: 1px solid var(--border-2); border-radius: 8px; padding: 7px 10px; background: var(--card); width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.log div { display: grid; grid-template-columns: 170px 1fr; gap: 12px; padding: 7px 16px; border-bottom: 1px solid var(--border); }
+.log time { color: var(--ink3); font-variant-numeric: tabular-nums; }
+.log .warn { color: var(--warn); } .log .error { color: var(--bad); }
+dl.info { display: grid; grid-template-columns: 200px 1fr; gap: 8px 16px; margin: 0 0 16px; }
+dl.info dt { color: var(--ink3); } dl.info dd { margin: 0; color: var(--ink); word-break: break-all; }
+
+dialog { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--card); color: var(--ink2); max-width: 520px; width: calc(100% - 32px); }
+dialog::backdrop { background: rgba(11, 36, 71, .45); }
+dialog .dh { padding: 18px 20px 6px; } dialog h2 { margin: 0; font-size: 18px; color: var(--ink); }
+dialog .db { padding: 6px 20px 14px; } dialog .df { padding: 12px 20px 18px; display: flex; justify-content: flex-end; gap: 8px; }
+dialog input, dialog textarea { width: 100%; border: 1px solid var(--border-2); border-radius: 8px; padding: 8px 10px; background: var(--card); }
+dialog textarea { min-height: 180px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.toast { position: fixed; right: 24px; bottom: 24px; max-width: 440px; padding: 12px 16px; border-radius: 8px; background: var(--ink); color: var(--card); display: none; z-index: 10; }
+.toast.show { display: block; } .toast.bad { background: var(--bad); color: #fff; }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: no-preference) { tr.edited td { transition: background-color .2s; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="in">
+    <div>
+      <h1>MQTT &amp; Sparkplug to BACnet</h1>
+      <div class="sub">Publishes MQTT and Sparkplug B tags as BACnet objects for WebCTRL</div>
+    </div>
+    <div class="health" id="health" role="status"><span class="dot"></span><span id="healthText">Loading…</span></div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="mapping">Mapping</button>
+    <button role="tab" aria-selected="false" data-tab="activity">Activity</button>
+    <button role="tab" aria-selected="false" data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <div id="banners"></div>
+
+  <section class="flow" aria-label="Tags from the broker to BACnet">
+    <div class="stage"><div class="n" id="fPoints">–</div><div class="l">Source tags in the Abound Normalizer</div></div>
+    <div class="stage"><div class="n" id="fMapped">–</div><div class="l">Mapped to a BACnet object</div></div>
+    <div class="stage pub"><div class="n" id="fPub">–</div><div class="l">Published to BACnet</div></div>
+    <div class="stage stale" id="fStaleBox"><div class="n" id="fStale">–</div><div class="l">Not reporting (FAULT)</div></div>
+  </section>
+
+  <!-- Mapping -->
+  <section id="tab-mapping" class="card">
+    <div class="bar">
+      <div class="seg" role="group" aria-label="Show">
+        <button data-filter="all" aria-pressed="true">All</button>
+        <button data-filter="draft" aria-pressed="false">Needs approval</button>
+        <button data-filter="pub" aria-pressed="false">Published</button>
+        <button data-filter="skip" aria-pressed="false">Not published</button>
+      </div>
+      <input class="search" id="search" type="search" name="spb-filter" autocomplete="off" placeholder="Filter by tag or object name" aria-label="Filter">
+      <span class="grow"></span>
+      <button class="btn" id="btnPlan">Find new tags</button>
+      <button class="btn" id="btnSave" disabled>Save changes</button>
+      <button class="btn primary" id="btnApprove" disabled>Approve and publish</button>
+    </div>
+    <ul class="problems" id="problems" hidden></ul>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th><input type="checkbox" id="selAll" aria-label="Select all shown"></th>
+          <th>Status</th><th>Source tag</th><th>Value</th><th>Object</th><th>Instance</th>
+          <th>Object name</th><th>Units</th><th>Scale</th><th>Offset</th><th>Bit</th><th></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="empty" hidden>
+      <div>No tags mapped yet. The app lists every tag received from MQTT or the Sparkplug Consumer, as drafts for review. For a plain MQTT broker, set it up on the Settings tab first.</div>
+      <button class="btn primary" id="btnPlan2">Find tags</button>
+    </div>
+    <div class="foot">
+      <span id="selInfo">0 selected</span>
+      <button class="btn" id="btnRemove" disabled>Unpublish selected</button>
+      <span class="grow"></span>
+      <button class="btn" id="btnExport">Export CSV</button>
+      <button class="btn" id="btnImport">Import CSV</button>
+    </div>
+  </section>
+
+  <!-- Activity -->
+  <section id="tab-activity" class="card" hidden>
+    <div class="panel">
+      <dl class="info" id="cycleInfo"></dl>
+      <button class="btn" id="btnSyncNow">Run one sync now</button>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="card" hidden>
+    <div class="panel">
+      <div class="grid">
+        <label for="sInterval">Update interval (seconds)</label><input id="sInterval" type="number" min="2" step="1">
+        <div class="hint">How often values are copied to BACnet. 5 seconds suits most sites.</div>
+        <label for="sStale">Not-reporting timeout (seconds)</label><input id="sStale" type="number" min="5" step="5">
+        <div class="hint">At least three times the PLC’s slowest publish interval.</div>
+        <label for="sStaleAction">When a tag stops reporting</label>
+        <select id="sStaleAction"><option value="flags">Set FAULT in Status_Flags</option><option value="none">Do nothing</option></select>
+        <div class="hint">Choose “Do nothing” if the edge node only publishes changes (report by exception).</div>
+        <label for="sOffset">BACnet device</label>
+        <select id="sOffset"><option value="0">Platform device (offset 0)</option><option value="1">Offset 1</option><option value="2">Offset 2</option><option value="3">Offset 3</option></select>
+        <div class="hint">Used for new tags. Offset 0 is the device configured in BACnet settings.</div>
+        <label for="sStart">First instance number</label><input id="sStart" type="number" min="0" step="1">
+        <div class="hint">New tags are numbered from here, per object type. Existing numbers never change.</div>
+        <label for="sName">Object names</label>
+        <select id="sName"><option value="device">Device.Tag</option><option value="full">EdgeNode.Device.Tag</option></select>
+        <div class="hint">Used for new tags. Rename objects on the Mapping tab to follow the site standard.</div>
+        <label for="sApi">API address</label><input id="sApi" type="text" placeholder="http://localhost:8080">
+        <div class="hint">Leave blank unless the console port is not 8080 (NF_PORT in /opt/nf/.env).</div>
+        <label for="sToken">API token</label><input id="sToken" type="password" autocomplete="new-password">
+        <div class="hint">Only if console authentication is enabled.</div>
+      </div>
+      <h3 class="sect">MQTT broker (plain topics)</h3>
+      <div class="grid">
+        <label for="mEnabled">Read from an MQTT broker</label>
+        <select id="mEnabled"><option value="false">Off</option><option value="true">On</option></select>
+        <div class="hint">For brokers that publish one value per topic. Sparkplug B brokers use the platform’s Sparkplug Consumer instead.</div>
+        <label for="mUrl">Broker address</label><input id="mUrl" type="text" placeholder="tcp://10.0.0.1:1883, tcp://10.0.0.2:1883  or  tls://broker:8883">
+        <div class="hint">List several brokers separated by commas for failover. The app uses one at a time and moves to the next if it cannot connect. Same format as the Sparkplug connector (tcp:// or tls://); mqtt://, mqtts:// and a bare IP (port 1883) also work.</div>
+        <label for="mUser">Username</label><input id="mUser" type="text" autocomplete="off">
+        <label for="mPass">Password</label><input id="mPass" type="password" autocomplete="new-password">
+        <label for="mTopics">Topics</label><input id="mTopics" type="text" placeholder="site/#, other/topic/+">
+        <div class="hint">Comma-separated subscriptions. # matches everything below a level.</div>
+        <label for="mClient">Client ID</label><input id="mClient" type="text">
+        <div class="hint">Must not be used by any other client on the broker.</div>
+        <label for="mSuffix">Trim from names</label><input id="mSuffix" type="text" placeholder="/Value">
+        <label for="mJson">JSON value field</label><input id="mJson" type="text" placeholder="automatic">
+        <div class="hint">Only for JSON payloads with an unusual layout, for example data.reading.</div>
+        <label for="mCa">TLS CA certificate</label><textarea id="mCa" rows="3" placeholder="-----BEGIN CERTIFICATE----- (only for mqtts:// with a private CA)"></textarea>
+        <label for="mMax">Objects per BACnet device</label><input id="mMax" type="number" min="0" step="10">
+        <div class="hint">New tags move to the next device offset when a device is full. 0 = no limit.</div>
+      </div>
+      <p><button class="btn" id="btnMqttTest">Test connection</button> <span id="mqttTestOut" class="note"></span></p>
+      <div class="scroll"><table id="mqttSample" hidden><thead><tr><th>Topic</th><th>Payload</th><th>Read as</th></tr></thead><tbody></tbody></table></div>
+      <p><button class="btn primary" id="btnSettings">Save settings</button></p>
+      <dl class="info" id="platformInfo"></dl>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlgApprove">
+  <div class="dh"><h2>Approve and publish</h2></div>
+  <div class="db">
+    <p id="approveText"></p>
+    <label for="approveBy">Approved by</label>
+    <input id="approveBy" type="text" name="spb-approver" autocomplete="name" placeholder="Name, for the change record">
+  </div>
+  <div class="df"><button class="btn" data-close>Cancel</button><button class="btn primary" id="approveGo">Publish</button></div>
+</dialog>
+<dialog id="dlgBits">
+  <div class="dh"><h2>Split into bits</h2></div>
+  <div class="db">
+    <p>Each bit becomes its own Binary Value. Enter bit numbers, for example <code>0,1,4</code> or <code>0-7</code>.</p>
+    <input id="bitsInput" type="text" aria-label="Bits">
+  </div>
+  <div class="df"><button class="btn" data-close>Cancel</button><button class="btn primary" id="bitsGo">Add bit objects</button></div>
+</dialog>
+<dialog id="dlgImport">
+  <div class="dh"><h2>Import CSV</h2></div>
+  <div class="db">
+    <p>Paste an exported mapping, or an existing gateway’s point list with a <code>path</code> column. Rows are matched by tag path; changed rows return to “Needs approval”.</p>
+    <textarea id="importText" aria-label="CSV"></textarea>
+  </div>
+  <div class="df"><button class="btn" data-close>Cancel</button><button class="btn primary" id="importGo">Import</button></div>
+</dialog>
+<div class="toast" id="toast" role="alert"></div>
+
+<script>
+(function () {
+  'use strict';
+  // ---------------------------------------------------------------- hook calls
+  // The console opens app pages with ?applicationId=…&token=…; the token must be sent as a
+  // Bearer header on every API call, and the hook's id is looked up by its name.
+  var Q = new URLSearchParams(location.search);
+  var m = location.pathname.match(/\/apps\/static\/([^/]+)/);
+  var APP = Q.get('applicationId') || (m && decodeURIComponent(m[1])) || 'sparkplug-bacnet';
+  var TOKEN = Q.get('token');
+  var BASE = '/api/v1/apps/' + encodeURIComponent(APP);
+  var DEMO = Q.get('demo') === '1';
+  var hookIdCache = null;
+
+  function headers(json) {
+    var h = {}; if (json) h['Content-Type'] = 'application/json';
+    if (TOKEN) h.Authorization = 'Bearer ' + TOKEN;
+    return h;
+  }
+  async function hookId() {
+    if (hookIdCache) return hookIdCache;
+    try {
+      var r = await fetch(BASE, { headers: headers(), credentials: 'same-origin', cache: 'no-store' });
+      if (r.ok) {
+        var d = await r.json(), app = (d.applications || [d.application || d])[0] || {};
+        var h = (app.hooks || []).find(function (x) { return x.name === 'api' || x.id === 'api'; });
+        if (h) return (hookIdCache = h.id);
+      }
+    } catch (e) {}
+    return 'api';
+  }
+  function rid() {
+    try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+    var a = new Uint8Array(16); crypto.getRandomValues(a);
+    return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  function rpcUrl(id) {
+    var p = location.pathname; if (!/\/$/.test(p)) p = p.replace(/[^/]*$/, '');
+    return p + '_rpc/' + id + '.json' + location.search;
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function parse(v) { for (var i = 0; i < 3 && typeof v === 'string'; i++) { try { v = JSON.parse(v); } catch (e) { break; } } return v; }
+
+  async function call(action, extra, timeoutMs) {
+    if (DEMO) return demoCall(action, extra || {});
+    var id = rid();
+    var req = Object.assign({ action: action, rid: id }, extra || {});
+    var hook = BASE + '/hooks/' + encodeURIComponent(await hookId());
+    var start = await fetch(hook, { method: 'POST', headers: headers(true), credentials: 'same-origin',
+      body: JSON.stringify({ key: 'req', value: JSON.stringify(req) }) });
+    if (start.status === 401) throw new Error('The platform refused the request (HTTP 401). Open this app from the console’s Applications page so it receives a sign-in token.');
+    if (!start.ok) throw new Error('The app’s api hook could not be started (HTTP ' + start.status + '). Check the Hooks tab.');
+    var s = {}; try { s = await start.json(); } catch (e) {}
+    if (s.error && s.error.message) throw new Error(s.error.message);
+    var until = Date.now() + (timeoutMs || 65000), wait = 200, n = 0;
+    while (Date.now() < until) {
+      await sleep(wait); wait = Math.min(1000, Math.round(wait * 1.4)); n++;
+      try {
+        var r = await fetch(rpcUrl(id), { headers: headers(), credentials: 'same-origin', cache: 'no-store' });
+        if (r.ok) { var out = parse(await r.text()); if (out && typeof out === 'object') { if (out.ok === false) throw new Error(out.error || 'Request failed'); return out; } }
+      } catch (e) { if (!(e instanceof TypeError) && !(e instanceof SyntaxError)) throw e; }
+      if (s.pid && n % 3 === 0) {
+        try {
+          var q = await fetch(hook + '/results?pid=' + encodeURIComponent(s.pid), { headers: headers(), credentials: 'same-origin', cache: 'no-store' });
+          if (q.ok) {
+            var j = await q.json(), res = (j.results || []).find(function (x) { return !x.pid || String(x.pid) === String(s.pid); });
+            if (res && res.error && res.error.message) throw new Error('api hook error: ' + res.error.message);
+            var rv = res && (res.returnValue != null && res.returnValue !== '' ? res.returnValue : (res.returnData && res.returnData.value));
+            var o = parse(rv);
+            if (o && typeof o === 'object') { if (o.ok === false) throw new Error(o.error); return o; }
+          }
+        } catch (e) { if (!(e instanceof TypeError)) throw e; }
+      }
+    }
+    throw new Error('No answer from the api hook after ' + Math.round((timeoutMs || 65000) / 1000) + ' s. Check its runs on the Hooks tab.');
+  }
+
+  // ---------------------------------------------------------------- state
+  var S = { rows: [], points: {}, last: {}, stale: {}, edits: {}, sel: new Set(), filter: 'all', q: '', problems: [], status: null };
+  var UNITS = [[95, 'no units'], [64, '°F'], [62, '°C'], [98, '%'], [29, '%RH'], [56, 'psi'], [58, 'in. water'], [53, 'Pa'],
+    [54, 'kPa'], [3, 'A'], [2, 'mA'], [5, 'V'], [48, 'kW'], [47, 'W'], [19, 'kWh'], [27, 'Hz'], [104, 'rpm'], [84, 'cfm'],
+    [89, 'gpm'], [87, 'L/s'], [77, 'ft/min'], [96, 'ppm'], [73, 's'], [72, 'min'], [71, 'h']];
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(msg, bad) { var t = $('toast'); t.textContent = msg; t.className = 'toast show' + (bad ? ' bad' : ''); clearTimeout(t._h); t._h = setTimeout(function () { t.className = 'toast'; }, bad ? 9000 : 4000); }
+  function busy(btn, on) { if (btn) btn.disabled = on; document.body.style.cursor = on ? 'progress' : ''; }
+
+  function view(r) { return Object.assign({}, r, S.edits[r.key] || {}); }
+  function rowState(r) { if (!r.enabled) return 'skip'; return r.approved ? 'pub' : 'draft'; }
+
+  // ---------------------------------------------------------------- loading
+  async function loadAll() {
+    try {
+      var res = await Promise.all([call('rows'), call('points', null, 90000), call('status')]);
+      S.rows = res[0].rows; S.problems = res[0].problems || []; S.last = res[0].runtime.last || {}; S.stale = res[0].runtime.stale || {};
+      S.points = {}; res[1].points.forEach(function (p) { S.points[p.uuid] = p; });
+      setStatus(res[2]);
+      render();
+    } catch (e) { banner('bad', e.message); setHealth('bad', 'Not connected'); }
+  }
+  async function refreshStatus() {
+    try { var st = await call('status'); setStatus(st); var rr = await call('rows'); S.last = rr.runtime.last || {}; S.stale = rr.runtime.stale || {}; renderRows(); }
+    catch (e) { setHealth('bad', 'Not connected'); }
+  }
+
+  function setHealth(kind, text) { $('health').className = 'health ' + kind; $('healthText').textContent = text; }
+  function banner(kind, html) { $('banners').innerHTML = html ? '<div class="banner ' + kind + '">' + html + '</div>' : ''; }
+
+  function setStatus(st) {
+    S.status = st;
+    var c = st.counts || {}, lc = st.lastCycle;
+    $('fPoints').textContent = lc ? lc.points : (Object.keys(S.points).length || '–');
+    $('fMapped').textContent = c.enabled != null ? c.enabled : '–';
+    $('fPub').textContent = c.approved != null ? c.approved : '–';
+    var stale = lc ? lc.stale : 0; $('fStale').textContent = stale;
+    $('fStaleBox').classList.toggle('zero', !stale);
+    var age = lc ? (Date.now() - Date.parse(lc.at)) / 1000 : Infinity;
+    if (st.apiError && !/404/.test(st.apiError)) { setHealth('bad', 'Can’t reach the platform API'); banner('bad', '<strong>The app can’t reach the platform API.</strong> ' + esc(st.apiError) + ' Set the API address on the Settings tab if the console port is not 8080.'); }
+    else if (st.mqtt && st.mqtt.enabled && st.mqtt.error) { setHealth('bad', 'MQTT not connected'); banner('bad', '<strong>MQTT broker:</strong> ' + esc(st.mqtt.error) + ' Check the broker settings on the Settings tab.'); }
+    else if (!st.syncOk) { setHealth('bad', 'Sync failing'); banner('bad', '<strong>Sync is failing:</strong> ' + esc(st.syncError)); }
+    else if (!c.approved) { setHealth('warn', 'Nothing published yet'); banner('', ''); }
+    else if (age > 150) { setHealth('warn', 'Sync not running'); banner('warn', '<strong>The sync hook hasn’t run for ' + (isFinite(age) ? Math.round(age / 60) + ' min' : 'a while') + '.</strong> Check that the “sync” hook is listed and enabled on the app’s Hooks tab.'); }
+    else { setHealth('ok', 'Publishing · updated ' + Math.max(0, Math.round(age)) + ' s ago'); banner('', ''); }
+    renderActivity(st); renderSettings(st);
+  }
+
+  // ---------------------------------------------------------------- mapping table
+  function shownRows() {
+    var q = S.q.toLowerCase();
+    return S.rows.filter(function (r) {
+      var v = view(r);
+      if (S.filter !== 'all' && rowState(v) !== S.filter) return false;
+      return !q || (v.path + ' ' + v.name).toLowerCase().indexOf(q) >= 0;
+    });
+  }
+
+  function unitOptions(u) {
+    var has = UNITS.some(function (x) { return String(x[0]) === String(u); });
+    var o = UNITS.map(function (x) { return '<option value="' + x[0] + '"' + (String(x[0]) === String(u) ? ' selected' : '') + '>' + esc(x[1]) + '</option>'; }).join('');
+    if (u !== '' && u != null && !has) o = '<option value="' + esc(u) + '" selected>BACnet ' + esc(u) + '</option>' + o;
+    return o;
+  }
+
+  function fmt(v) {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'number') return String(Number(v.toPrecision(6)));
+    return String(v);
+  }
+
+  function renderRows() {
+    var list = shownRows();
+    $('empty').hidden = S.rows.length > 0;
+    var html = list.map(function (r) {
+      var v = view(r), st = rowState(v), p = S.points[r.point] || {}, edited = !!S.edits[r.key];
+      var isInt = /int/i.test(p.datatype || '') && !v.bit && v.bit !== 0;
+      var pill = st === 'pub' ? (S.stale[r.key] ? '<span class="pill stale">Not reporting</span>' : '<span class="pill pub">Published</span>')
+        : st === 'draft' ? '<span class="pill draft">Needs approval</span>' : '<span class="pill skip">Not published</span>';
+      var pv = S.last[r.key];
+      var dis = !v.enabled ? ' disabled' : '';
+      return '<tr data-key="' + esc(r.key) + '" class="' + (edited ? 'edited ' : '') + (st === 'skip' ? 'skipped' : '') + '">' +
+        '<td><input type="checkbox" class="sel"' + (S.sel.has(r.key) ? ' checked' : '') + ' aria-label="Select ' + esc(v.name) + '"></td>' +
+        '<td>' + pill + (st === 'skip' && v.note ? '<div class="note">' + esc(v.note) + '</div>' : '') + '</td>' +
+        '<td class="path"><div class="p">' + esc(v.path) + (v.bit !== '' && v.bit != null ? ' · bit ' + esc(v.bit) : '') + '</div><div class="meta">' + esc(p.datatype || '') + (p.units ? ' · ' + esc(p.units) : '') + '</div></td>' +
+        '<td><div class="val">' + esc(fmt(p.value)) + (pv !== undefined && st === 'pub' ? '<small>BACnet ' + esc(fmt(pv)) + '</small>' : '') + '</div></td>' +
+        '<td><select data-f="objectType"' + (v.enabled ? '' : '') + '>' +
+          '<option value="">—</option>' + ['av', 'bv', 'msv'].map(function (t) { return '<option value="' + t + '"' + (v.objectType === t ? ' selected' : '') + '>' + t.toUpperCase() + '</option>'; }).join('') + '</select></td>' +
+        '<td><input class="num" data-f="instance" type="number" min="0" value="' + esc(v.instance) + '"' + dis + '></td>' +
+        '<td><input class="name" data-f="name" type="text" value="' + esc(v.name) + '"' + dis + '></td>' +
+        '<td>' + (v.objectType === 'av' ? '<select data-f="units"' + dis + '>' + unitOptions(v.units) + '</select>'
+          : v.objectType === 'msv' ? '<input class="tiny" data-f="states" type="number" min="2" title="Number of states" value="' + esc(v.states || 4) + '"' + dis + '> states' : '') + '</td>' +
+        '<td>' + (v.objectType === 'av' ? '<input class="tiny" data-f="scale" type="text" inputmode="decimal" value="' + esc(v.scale) + '"' + dis + '>' : '') + '</td>' +
+        '<td>' + (v.objectType === 'av' ? '<input class="tiny" data-f="offset" type="text" inputmode="decimal" value="' + esc(v.offset) + '"' + dis + '>' : '') + '</td>' +
+        '<td>' + (v.bit !== '' && v.bit != null ? esc(v.bit) : '') + '</td>' +
+        '<td>' + (isInt && v.enabled ? '<button class="btn bits" type="button">Split bits</button>' : '') +
+          (!v.enabled && !/Node-level|control metric/.test(v.note || '') ? '<button class="btn include" type="button">Include</button>' : '') + '</td>' +
+        '</tr>';
+    }).join('');
+    $('rows').innerHTML = html;
+    var pr = S.problems || [];
+    $('problems').hidden = !pr.length;
+    $('problems').innerHTML = pr.slice(0, 8).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + (pr.length > 8 ? '<li>…and ' + (pr.length - 8) + ' more</li>' : '');
+    updateButtons();
+  }
+  function render() { renderRows(); }
+
+  function updateButtons() {
+    var nEdits = Object.keys(S.edits).length;
+    $('btnSave').disabled = !nEdits;
+    $('btnSave').textContent = nEdits ? 'Save changes (' + nEdits + ')' : 'Save changes';
+    var drafts = S.rows.filter(function (r) { return r.enabled && !r.approved && r.objectType; });
+    var selDrafts = drafts.filter(function (r) { return S.sel.has(r.key); });
+    var n = S.sel.size ? selDrafts.length : drafts.length;
+    $('btnApprove').disabled = !n || nEdits > 0;
+    $('btnApprove').textContent = n ? 'Approve and publish (' + n + ')' : 'Approve and publish';
+    $('btnApprove').title = nEdits ? 'Save your changes first' : '';
+    $('selInfo').textContent = S.sel.size + ' selected';
+    $('btnRemove').disabled = !S.rows.some(function (r) { return S.sel.has(r.key) && r.approved; });
+  }
+
+  function edit(key, field, value) {
+    var r = S.rows.find(function (x) { return x.key === key; }); if (!r) return;
+    var e = S.edits[key] || {};
+    e[field] = value;
+    for (var k in e) if (String(e[k]) === String(r[k] == null ? '' : r[k])) delete e[k];
+    if (Object.keys(e).length) S.edits[key] = e; else delete S.edits[key];
+  }
+
+  $('rows').addEventListener('change', function (ev) {
+    var tr = ev.target.closest('tr'); if (!tr) return;
+    var key = tr.dataset.key;
+    if (ev.target.classList.contains('sel')) { if (ev.target.checked) S.sel.add(key); else S.sel.delete(key); updateButtons(); return; }
+    var f = ev.target.dataset.f; if (!f) return;
+    var val = ev.target.value;
+    if (['instance', 'units', 'states'].indexOf(f) >= 0 && val !== '') val = Number(val);
+    edit(key, f, val);
+    if (f === 'objectType') { renderRows(); return; }
+    tr.classList.toggle('edited', !!S.edits[key]); updateButtons();
+  });
+  $('rows').addEventListener('click', function (ev) {
+    var tr = ev.target.closest('tr'); if (!tr) return;
+    if (ev.target.classList.contains('bits')) { S.bitsKey = tr.dataset.key; $('bitsInput').value = ''; $('dlgBits').showModal(); }
+    if (ev.target.classList.contains('include')) {
+      var r = S.rows.find(function (x) { return x.key === tr.dataset.key; });
+      edit(r.key, 'enabled', true); if (!view(r).objectType) edit(r.key, 'objectType', 'av'); renderRows();
+    }
+  });
+  $('selAll').addEventListener('change', function (ev) {
+    shownRows().forEach(function (r) { if (ev.target.checked) S.sel.add(r.key); else S.sel.delete(r.key); });
+    renderRows();
+  });
+  document.querySelectorAll('[data-filter]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      S.filter = b.dataset.filter;
+      document.querySelectorAll('[data-filter]').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+      renderRows();
+    });
+  });
+  $('search').addEventListener('input', function (ev) { S.q = ev.target.value; renderRows(); });
+
+  async function afterRows(res, msg) {
+    if (res.rows) S.rows = res.rows;
+    if (res.problems) S.problems = res.problems;
+    renderRows(); if (msg) toast(msg);
+    refreshStatus();
+  }
+
+  async function plan(btn) {
+    busy(btn, true);
+    try { var res = await call('plan', null, 90000); await afterRows(res, res.added ? res.added + ' new tag(s) added for review' : 'No new tags found'); var p = await call('points', null, 90000); S.points = {}; p.points.forEach(function (x) { S.points[x.uuid] = x; }); renderRows(); }
+    catch (e) { toast(e.message, true); } finally { busy(btn, false); updateButtons(); }
+  }
+  $('btnPlan').onclick = function () { plan($('btnPlan')); };
+  $('btnPlan2').onclick = function () { plan($('btnPlan2')); };
+
+  $('btnSave').onclick = async function () {
+    var changes = Object.keys(S.edits).map(function (k) { return Object.assign({ key: k }, S.edits[k]); });
+    var published = changes.filter(function (c) { var r = S.rows.find(function (x) { return x.key === c.key; }); return r && r.approved; }).length;
+    if (published && !confirm(published + ' published object(s) will be removed from BACnet until you approve them again. WebCTRL will show them offline in the meantime. Continue?')) return;
+    busy(this, true);
+    try { var res = await call('save', { changes: changes }); S.edits = {}; await afterRows(res, 'Saved ' + res.changed + ' change(s)'); }
+    catch (e) { toast(e.message, true); } finally { busy(this, false); updateButtons(); }
+  };
+
+  $('btnApprove').onclick = function () {
+    var drafts = S.rows.filter(function (r) { return r.enabled && !r.approved && r.objectType && (!S.sel.size || S.sel.has(r.key)); });
+    S.approveKeys = drafts.map(function (r) { return r.key; });
+    $('approveText').textContent = 'Publish ' + drafts.length + ' object(s) on the BACnet device. They become visible to WebCTRL immediately. Only approve rows that match the approved point list.';
+    $('dlgApprove').showModal();
+  };
+  $('approveGo').onclick = async function () {
+    var by = $('approveBy').value.trim();
+    if (!by) { $('approveBy').focus(); return; }
+    busy(this, true);
+    try {
+      var res = await call('approve', { keys: S.approveKeys, by: by }, 120000);
+      $('dlgApprove').close(); S.sel.clear();
+      await afterRows(res, 'Published ' + res.created + ' object(s)' + (res.failed ? ', ' + res.failed + ' failed (see Activity)' : ''));
+    } catch (e) { toast(e.message, true); } finally { busy(this, false); }
+  };
+
+  $('btnRemove').onclick = async function () {
+    var keys = S.rows.filter(function (r) { return S.sel.has(r.key) && r.approved; }).map(function (r) { return r.key; });
+    if (!confirm('Unpublish ' + keys.length + ' object(s)? They are deleted from the BACnet device and WebCTRL will lose them. Their instance numbers stay reserved.')) return;
+    busy(this, true);
+    try { var res = await call('remove', { keys: keys }); S.sel.clear(); await afterRows(res, 'Unpublished ' + res.removed + ' object(s)'); }
+    catch (e) { toast(e.message, true); } finally { busy(this, false); }
+  };
+
+  $('bitsGo').onclick = async function () {
+    var bits = [];
+    $('bitsInput').value.split(',').forEach(function (part) {
+      var m2 = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/); if (!m2) return;
+      for (var b = +m2[1]; b <= +(m2[2] || m2[1]); b++) if (b < 64) bits.push(b);
+    });
+    if (!bits.length) { $('bitsInput').focus(); return; }
+    busy(this, true);
+    try { var res = await call('save', { addBits: bits.map(function (b) { return { key: S.bitsKey, bit: b }; }) }); $('dlgBits').close(); await afterRows(res, 'Added ' + res.changed + ' bit object(s) for review'); }
+    catch (e) { toast(e.message, true); } finally { busy(this, false); }
+  };
+
+  $('btnExport').onclick = async function () {
+    try {
+      var res = await call('exportCsv');
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([res.csv], { type: 'text/csv' }));
+      a.download = res.filename; document.body.appendChild(a); a.click(); a.remove();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('btnImport').onclick = function () { $('importText').value = ''; $('dlgImport').showModal(); };
+  $('importGo').onclick = async function () {
+    busy(this, true);
+    try { var res = await call('importCsv', { csv: $('importText').value }); $('dlgImport').close(); await afterRows(res, res.matched + ' matched, ' + res.changed + ' changed, ' + res.unmatched + ' not matched'); }
+    catch (e) { toast(e.message, true); } finally { busy(this, false); }
+  };
+  document.querySelectorAll('dialog [data-close]').forEach(function (b) { b.onclick = function () { b.closest('dialog').close(); }; });
+
+  // ---------------------------------------------------------------- activity & settings
+  function renderActivity(st) {
+    var lc = st.lastCycle;
+    var rows = [['Last sync', lc ? new Date(lc.at).toLocaleString() : 'Not yet'],
+      ['Objects updated in last sync', lc ? lc.updated + ' of ' + lc.active : '—'],
+      ['Sync duration', lc ? lc.ms + ' ms' : '—'],
+      ['Tags missing from the consumer', lc ? lc.missing : '—'],
+      ['Not reporting', (st.staleNames || []).slice(0, 12).join(', ') || 'None']];
+    if (lc && lc.layersWaiting && lc.layersWaiting.length) rows.push(['Source layers with no points yet', lc.layersWaiting.join(', ')]);
+    var mq = st.mqtt;
+    if (mq && mq.enabled) {
+      rows.push(['MQTT broker', mq.error ? 'Error: ' + mq.error : (mq.connected ? 'Connected' + (mq.broker ? ' to ' + mq.broker : '') : 'Not connected')]);
+      rows.push(['MQTT topics as points', mq.topics != null ? mq.topics : '—']);
+      rows.push(['MQTT messages in last run', mq.messagesLastRun != null ? mq.messagesLastRun : '—']);
+      rows.push(['Last MQTT message', mq.lastMessageAt ? new Date(mq.lastMessageAt).toLocaleString() : 'None yet']);
+    }
+    $('cycleInfo').innerHTML = rows.map(function (r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
+    $('log').innerHTML = (st.log || []).map(function (l) {
+      return '<div class="' + esc(l.level) + '"><time>' + esc(new Date(l.t).toLocaleString()) + '</time><span>' + esc(l.msg) + '</span></div>';
+    }).join('') || '<div><span></span><span>No activity yet.</span></div>';
+  }
+  var settingsLoaded = false;
+  function renderSettings(st) {
+    var s = st.settings || {};
+    if (!settingsLoaded) {
+      $('sInterval').value = s.interval; $('sStale').value = s.staleS; $('sStaleAction').value = s.staleAction;
+      $('sOffset').value = String(s.deviceOffset || 0); $('sStart').value = s.startInstance; $('sName').value = s.nameStyle;
+      $('sApi').value = s.apiBase || ''; $('sToken').value = s.apiToken || '';
+      var mq = s.mqtt || {};
+      $('mEnabled').value = mq.enabled ? 'true' : 'false'; $('mUrl').value = mq.url || ''; $('mUser').value = mq.username || '';
+      $('mPass').value = mq.password || ''; $('mTopics').value = mq.topics || ''; $('mClient').value = mq.clientId || '';
+      $('mSuffix').value = mq.stripSuffix || ''; $('mJson').value = mq.jsonPath || ''; $('mCa').value = mq.ca || '';
+      $('mMax').value = s.maxObjectsPerDevice != null ? s.maxObjectsPerDevice : 250;
+      settingsLoaded = true;
+    }
+    var p = st.platform || {};
+    $('platformInfo').innerHTML = '<dt>API address in use</dt><dd>' + esc(st.apiBase) + '</dd>' +
+      '<dt>Platform version</dt><dd>' + esc(p.version || p.Version || (st.apiError ? 'Unavailable' : '—')) + '</dd>';
+  }
+  $('btnSettings').onclick = async function () {
+    busy(this, true);
+    try {
+      await call('settings', { settings: {
+        interval: $('sInterval').value, staleS: $('sStale').value, staleAction: $('sStaleAction').value,
+        deviceOffset: $('sOffset').value, startInstance: $('sStart').value, nameStyle: $('sName').value,
+        apiBase: $('sApi').value.trim(), apiToken: $('sToken').value, maxObjectsPerDevice: $('mMax').value,
+        mqtt: mqttForm() } });
+      toast('Settings saved'); settingsLoaded = false; refreshStatus();
+    } catch (e) { toast(e.message, true); } finally { busy(this, false); }
+  };
+  function mqttForm() {
+    return { enabled: $('mEnabled').value === 'true', url: $('mUrl').value.trim(), username: $('mUser').value.trim(),
+      password: $('mPass').value, topics: $('mTopics').value.trim(), clientId: $('mClient').value.trim(),
+      stripSuffix: $('mSuffix').value, jsonPath: $('mJson').value.trim(), ca: $('mCa').value.trim() };
+  }
+  $('btnMqttTest').onclick = async function () {
+    busy(this, true); $('mqttTestOut').textContent = 'Connecting for a few seconds…';
+    try {
+      var r = (await call('mqttTest', { mqtt: mqttForm(), seconds: 6 }, 58000)).test;
+      var tb = $('mqttSample');
+      var bl = (r.brokers || []).map(function (b) { return b.url.replace(/^mqtt:\/\//, '') + (b.ok ? ' OK' : ' FAILED (' + b.error + ')'); }).join(' | ');
+      if (!r.ok) { $('mqttTestOut').textContent = 'Failed: ' + r.error + (bl ? ' — ' + bl : ''); tb.hidden = true; return; }
+      $('mqttTestOut').textContent = (bl ? 'Brokers: ' + bl + '. Sampled from ' + r.broker.replace(/^mqtt:\/\//, '') + '. ' : '') + 'Connected. ' + r.messages + ' message(s) in 6 s' + (r.messages ? '; sample below.' : '. No messages: check the topics, or whether the broker retains values.');
+      tb.querySelector('tbody').innerHTML = r.sample.map(function (x) {
+        return '<tr><td>' + esc(x.topic) + '</td><td><code>' + esc(x.raw) + '</code></td><td>' + esc(x.parsed === null ? '—' : String(x.parsed) + ' (' + typeof x.parsed + ')') + '</td></tr>';
+      }).join('');
+      tb.hidden = !r.sample.length;
+    } catch (e) { $('mqttTestOut').textContent = e.message; } finally { busy(this, false); }
+  };
+  $('btnSyncNow').onclick = async function () {
+    busy(this, true);
+    try { var r = await call('syncNow', null, 120000); toast(r.skipped ? 'Sync is already running' : 'Sync done: ' + (r.last ? r.last.updated : 0) + ' updated'); refreshStatus(); }
+    catch (e) { toast(e.message, true); } finally { busy(this, false); }
+  };
+
+  document.querySelectorAll('[data-tab]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('[data-tab]').forEach(function (x) { x.setAttribute('aria-selected', x === b ? 'true' : 'false'); });
+      ['mapping', 'activity', 'settings'].forEach(function (t) { $('tab-' + t).hidden = t !== b.dataset.tab; });
+    });
+  });
+
+  // ---------------------------------------------------------------- demo data (?demo=1) for previews
+  function demoCall(action) {
+    var tags = [['Line1_PLC/Tank1/Temp', 'Float', 'degF', 152.4, 'av', 64], ['Line1_PLC/Tank1/Level', 'Float', '%', 71.2, 'av', 98],
+      ['Line1_PLC/Pump1/Fault', 'Boolean', '', false, 'bv', ''], ['Line1_PLC/Line1/State', 'Int32', '', 3, 'msv', ''],
+      ['Line1_PLC/Line1/Alarm_Word', 'UInt16', '', 2851, 'av', 95], ['Boiler_PLC/Boiler/Supply_Temp', 'Float', 'degF', 178.9, 'av', 64],
+      ['Line1_PLC/Line1/Recipe', 'String', '', null, '', '']];
+    if (!S._demo) S._demo = tags.map(function (t, i) {
+      return { key: 'k' + i, point: 'k' + i, path: 'Edge01/' + t[0], objectType: t[4], instance: t[4] ? i + 1 : '', deviceOffset: 0,
+        name: t[0].replace(/\//g, '.'), units: t[5], states: t[4] === 'msv' ? 4 : '', bit: '', scale: '', offset: '',
+        enabled: !!t[4], approved: i < 3, note: t[4] ? '' : 'String: no BACnet object type' };
+    });
+    var rows = S._demo;
+    var pts = tags.map(function (t, i) { return { uuid: 'k' + i, path: 'Edge01/' + t[0], datatype: t[1], units: t[2], value: t[3] }; });
+    var counts = { enabled: rows.filter(function (r) { return r.enabled; }).length, approved: rows.filter(function (r) { return r.approved; }).length };
+    var st = { ok: true, apiBase: 'http://localhost:8080', apiError: '', platform: { version: 'v3.10.7' }, settings: { interval: 5, staleS: 60, staleAction: 'flags', deviceOffset: 0, startInstance: 1, nameStyle: 'device' },
+      counts: counts, lastCycle: { at: new Date().toISOString(), ms: 42, points: 7, active: counts.approved, updated: 2, stale: 0, missing: 0, errors: 0 }, syncOk: true, staleNames: [],
+      log: [{ t: new Date().toISOString(), level: 'info', msg: 'Approved 3 row(s) by demo' }] };
+    var map = { rows: { ok: true, rows: rows, problems: [], runtime: { last: { k0: 152.4, k1: 71.2, k2: false }, stale: {} } },
+      points: { ok: true, points: pts }, status: st };
+    return Promise.resolve(map[action] || { ok: true, rows: rows, added: 0, changed: 0, created: 0 });
+  }
+
+  loadAll();
+  setInterval(refreshStatus, 15000);
+})();
+</script>
+</body>
+</html>
