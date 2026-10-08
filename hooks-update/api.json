@@ -1,0 +1,10 @@
+{
+  "id": "api",
+  "name": "api",
+  "entryPoint": "/hooks/api.js",
+  "points": {
+    "noPoints": true
+  },
+  "mode": "MODE_ON_REQUEST",
+  "invokeTimeout": "60s"
+}
