@@ -1,5 +1,0 @@
-{
-  "name": "MQTT & Sparkplug to BACnet",
-  "description": "Publishes plain MQTT topics and Sparkplug B points as BACnet local objects (AV/BV/MSV) for WebCTRL and other BACnet clients. Read-only toward the source.",
-  "minNfVersion": "3.10.0-1"
-}
