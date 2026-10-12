@@ -1,0 +1,13 @@
+{
+  "id": "sync",
+  "name": "sync",
+  "entryPoint": "/hooks/sync.js",
+  "points": {
+    "noPoints": true
+  },
+  "schedule": {
+    "rrule": "DTSTART:20260101T000000Z\nRRULE:FREQ=MINUTELY;INTERVAL=1"
+  },
+  "mode": "MODE_SCHEDULED",
+  "invokeTimeout": "80s"
+}
